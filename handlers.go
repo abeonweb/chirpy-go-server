@@ -4,13 +4,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/abeonweb/chirpy-go-server/internal/auth"
 	"github.com/abeonweb/chirpy-go-server/internal/database"
 	"github.com/google/uuid"
 )
+
+type apiConfig struct {
+	fileserverHits atomic.Int32
+	db             *database.Queries
+	platform       string
+	jwtSecret      string
+	polka          string
+}
 
 type validChirpData struct {
 	ID        uuid.UUID `json:"id"`
@@ -24,6 +34,15 @@ const ExpiresIn = time.Second * 60 * 60 // create JWT with 1 hour expiry constan
 
 func (cfg *apiConfig) handleChirpyUpgrade(w http.ResponseWriter, r *http.Request) {
 
+	polka_API_key, apiKeyErr := auth.GetAPIKey(r.Header)
+	if apiKeyErr != nil {
+		respondWithError(w, 401, fmt.Sprintf("No API Key found: %v", apiKeyErr))
+		return
+	}
+	if polka_API_key != cfg.polka {
+		respondWithError(w, 401, "API key does not match")
+		return
+	}
 	polka := struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -46,9 +65,9 @@ func (cfg *apiConfig) handleChirpyUpgrade(w http.ResponseWriter, r *http.Request
 		respondWithError(w, 404, fmt.Sprintf("%v", dbErr))
 		return
 	}
-	
+
 	respondWithJSON(w, 204, "user upgrade success")
-	
+
 }
 
 func (cfg *apiConfig) handleLoginUpdate(w http.ResponseWriter, r *http.Request) {
@@ -212,13 +231,7 @@ func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, 404, "chirp not found")
 		return
 	}
-	chirp := validChirpData{
-		ID:        dbChirp.ID,
-		CreatedAt: dbChirp.CreatedAt,
-		UpdatedAt: dbChirp.UpdatedAt,
-		Body:      dbChirp.Body,
-		UserID:    dbChirp.UserID,
-	}
+	chirp := mapChirpToValidJson(dbChirp)
 	respondWithJSON(w, 200, chirp)
 
 }
@@ -264,22 +277,51 @@ func (cfg *apiConfig) handleDeleteChirpByID(w http.ResponseWriter, r *http.Reque
 
 }
 
+func mapChirpToValidJson(dbChirp database.Chirp) validChirpData {
+	return validChirpData{
+		ID:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserID:    dbChirp.UserID,
+	}
+}
 func (cfg *apiConfig) handleGetAllChirps(w http.ResponseWriter, r *http.Request) {
-	dbChirps, chirpErr := cfg.db.GetAllChirps(r.Context())
-	if chirpErr != nil {
+	var allChirps []database.Chirp
+	var err error
+	authorIDStr := r.URL.Query().Get("author_id")
+	sortChirps := r.URL.Query().Get("sort")
+	if authorIDStr != "" {
+		authorID, parseErr := uuid.Parse(authorIDStr)
+		if parseErr != nil {
+			respondWithError(w, 400, "invalid author id")
+			return
+		}
+		allChirps, err = cfg.db.GetAllChirpsByAuthor(r.Context(), authorID)
+	} else {
+		allChirps, err = cfg.db.GetAllChirps(r.Context())
+	}
+
+	if err != nil {
 		respondWithError(w, 500, "error retrieving chirps")
 		return
 	}
-	chirps := []validChirpData{}
-	for _, dbChirp := range dbChirps {
-		chirps = append(chirps, validChirpData{
-			ID:        dbChirp.ID,
-			CreatedAt: dbChirp.CreatedAt,
-			UpdatedAt: dbChirp.UpdatedAt,
-			Body:      dbChirp.Body,
-			UserID:    dbChirp.UserID,
+
+	chirps := make([]validChirpData, len(allChirps))
+	for i, dbChirp := range allChirps {
+		chirps[i] = mapChirpToValidJson(dbChirp)
+	}
+
+	switch sortChirps {
+	case "desc":
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
 		})
 
+	default:
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].CreatedAt.Before(chirps[j].CreatedAt)
+		})
 	}
 	respondWithJSON(w, 200, chirps)
 }
@@ -327,13 +369,7 @@ func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	chirpData := validChirpData{
-		ID:        chirp.ID,
-		CreatedAt: chirp.CreatedAt,
-		UpdatedAt: chirp.UpdatedAt,
-		Body:      chirp.Body,
-		UserID:    chirp.UserID,
-	}
+	chirpData := mapChirpToValidJson(chirp)
 	respondWithJSON(w, 201, chirpData)
 
 }

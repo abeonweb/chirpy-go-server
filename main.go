@@ -12,18 +12,12 @@ import (
 	_ "github.com/lib/pq"
 )
 
-type apiConfig struct {
-	fileserverHits atomic.Int32
-	db             *database.Queries
-	platform       string
-	jwtSecret      string
-}
-
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
 	secret := os.Getenv("JWT_SECRET")
+	polka := os.Getenv("POLKA_KEY")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		return
@@ -41,6 +35,7 @@ func main() {
 		db:             dbQueries,
 		platform:       platform,
 		jwtSecret:      secret,
+		polka:          polka,
 	}
 
 	mux.Handle("/app/", cfg.MiddlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
